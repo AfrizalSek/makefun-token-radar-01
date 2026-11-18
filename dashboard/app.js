@@ -54,9 +54,30 @@
     return node;
   }
 
-  // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL and age
-  // decide the action, the capital, the hold and every cost and time. No name is special-cased.
+  // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL, age
+  // and watchlist decide the action, the capital, the hold and every cost and time. One chain is
+  // named from a protocol's own docs, not the snapshot: Bitlayer, for Bitlayer's own vaults.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
+  function farmChain(p) {
+    if ((p.name || '').toLowerCase().indexOf('bitlayer') >= 0) return 'Bitlayer';
+    return chainOf(p);
+  }
+  function gasFor(chain) {
+    if (chain === 'Ethereum') return 8;
+    if (chain === 'Bitcoin') return 3;
+    return 1;
+  }
+  function walletFor(chain) {
+    if (chain === 'Bitcoin') return 'a fresh Bitcoin wallet';
+    if (chain === 'Solana') return 'a fresh Solana wallet';
+    if (chain === 'Sui') return 'a fresh Sui wallet';
+    return 'a fresh wallet on ' + chain;
+  }
+  function setupText(p, chain, watchlist) {
+    var wallet = walletFor(chain);
+    if (watchlist) return 'Set up ' + wallet + ' just for ' + p.name + ' on ' + chain + ' — the watchlist names this protocol — and keep its seed phrase offline.';
+    return 'Set up ' + wallet + ' that holds only the funds you plan to farm on ' + chain + ', and keep its seed phrase offline.';
+  }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 250;
     if (p.tvl_usd >= 1e9) return 150;
@@ -85,7 +106,50 @@
     if (c.indexOf('launchpad') >= 0) return 'Commit $' + capital + ' of USDC to the ' + name + ' sale on ' + chain + ' and hold the allocation.';
     if (c.indexOf('payment') >= 0) return 'Route $' + capital + ' of payments through ' + name + ' on ' + chain + ' and keep the receipts.';
     if (c.indexOf('gaming') >= 0 || c.indexOf('social') >= 0 || c.indexOf('ai') >= 0 || c.indexOf('oracle') >= 0) return 'Use $' + capital + ' of the ' + name + ' app on ' + chain + ' each week and keep the activity on one wallet.';
+    // BTC-anchored protocols take BTC, not USDC: USDC does not exist natively on Bitcoin.
+    if (c.indexOf('btc') >= 0) return 'Deposit $' + capital + ' of BTC into ' + name + ' on ' + chain + ' and keep the position open.';
     return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.';
+  }
+  function weeklyActionFor(p, chain) {
+    var c = (p.category || '').toLowerCase();
+    var name = p.name;
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Borrow a small amount against the position once a week and repay it, so the wallet shows repeat activity.';
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0 || c.indexOf('indexes') >= 0) return "Read the vault's new allocation note once a week and note any change in strategy.";
+    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0 || c.indexOf('liquidity') >= 0 || c.indexOf('farm') >= 0) return 'Swap a small amount through the pool once a week so the wallet shows repeat activity.';
+    if (c.indexOf('bridge') >= 0 || c.indexOf('cross chain') >= 0) return 'Bridge a small amount back or to a second chain once a week through the same route.';
+    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return 'Claim or compound the staking reward once a week and keep the receipt token.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('options') >= 0 || c.indexOf('basis') >= 0) return 'Close and reopen a small hedge once a week instead of leaving one trade untouched.';
+    if (c.indexOf('prediction') >= 0) return 'Settle one market position a week and place a fresh one on ' + name + '.';
+    if (c.indexOf('stable') >= 0) return 'Move a small amount in and out of the stable asset once a week through the same route.';
+    if (c.indexOf('rwa') >= 0) return "Check the yield asset's new accrual once a week and record the balance.";
+    if (c.indexOf('insurance') >= 0) return "Check the cover's terms once a week and note any change in the policy.";
+    if (c.indexOf('launchpad') >= 0) return "Check the sale's next round once a week and note the allocation window.";
+    if (c.indexOf('payment') >= 0) return 'Route one small payment through ' + name + ' on ' + chain + ' once a week and keep the receipt.';
+    if (/\b(gaming|social|ai|oracle)\b/.test(c)) return 'Use the ' + name + ' app once a week and keep the activity on the same wallet.';
+    if (c.indexOf('btc') >= 0) return "Check the BTC peg and the protocol's backing once a week and record the rate.";
+    return 'Repeat the deposit action with a small amount once a week so the wallet shows repeat activity.';
+  }
+  function holdText(p, age, hold, watchlist, chain) {
+    if (age !== null && age !== undefined && age < 180) return 'Hold the position for at least ' + hold + ' days — young protocols often snapshot early on ' + chain + ', so a longer window counts.';
+    if (watchlist) return 'Hold the position for at least ' + hold + ' days; the watchlist already tracks this protocol, so the hold is about qualifying.';
+    if (age !== null && age !== undefined && age >= 365) return 'Hold the position for at least ' + hold + ' days; a mature ' + (p.category || 'protocol') + " protocol's snapshots reward a steady position.";
+    return 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.';
+  }
+  var POINTS_CATEGORIES = ['dex', 'yield', 'lend', 'cdp', 'collateral', 'staking', 'restak', 'perpetual', 'derivative', 'options', 'basis', 'curator', 'allocator', 'indexes', 'prediction', 'farm', 'launchpad', 'governance'];
+  function rewardsText(p, chain, watchlist) {
+    var c = (p.category || '').toLowerCase();
+    if (c.indexOf('btc') >= 0) return "Before you withdraw, check the protocol's official docs for how wrapped BTC is redeemed on " + chain + ' and whether any rewards program applies.';
+    if (POINTS_CATEGORIES.some(function (k) { return c.indexOf(k) >= 0; })) {
+      if (watchlist) return "Before you withdraw, check the protocol's official app on " + chain + ' for any points, rewards or eligibility program — the watchlist already tracks this protocol — and follow only the link it publishes.';
+      return "Before you withdraw, check the protocol's official app on " + chain + ' for any points, rewards or eligibility program and follow only the link it publishes.';
+    }
+    return "Before you withdraw, check the protocol's official docs for any eligibility or rewards program; if it has none, record the position on " + chain + ' and move on.';
+  }
+  function logText(p, age, chain) {
+    if (p.tvl_usd >= 1e9) return 'Write the wallet, the dates and every transaction on ' + chain + ' in a farm log; a large position is worth a full record before you unwind it.';
+    if (age !== null && age !== undefined && age < 180) return 'Write the wallet, the dates and every transaction on ' + chain + ' in a farm log and review it weekly while the protocol is young.';
+    if (p.tvl_usd < 1e8) return 'Write the wallet, the dates and every transaction on ' + chain + ' in a farm log; small positions are easy to forget, so the log is the record.';
+    return 'Write the wallet, the dates and every transaction on ' + chain + ' in a farm log so you can repeat the position or unwind it.';
   }
   function stepText(step) {
     var s = step.text + ' Cost: ' + step.cost + '. Time: ' + step.time + '.';
@@ -94,16 +158,18 @@
     return s;
   }
   function farmSteps(p) {
-    var chain = chainOf(p);
+    var chain = farmChain(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
+    var gas = gasFor(chain);
+    var watchlist = !!p.watchlist;
     return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
+      { text: setupText(p, chain, watchlist), cost: 'about $' + gas + ' of gas for the first transaction', time: '5 minutes' },
+      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
+      { text: weeklyActionFor(p, chain), cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
+      { text: holdText(p, p.age_days, hold, watchlist, chain), cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: rewardsText(p, chain, watchlist), cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: logText(p, p.age_days, chain), cost: 'nothing but the log', time: '5 minutes' }
     ].map(stepText);
   }
 
@@ -171,13 +237,13 @@
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor, every one the snapshot records. Implied value is a model, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' rankable pre-token protocols below that floor, every other rankable one the snapshot records. ' + DATA.excluded_pre_token + ' of the ' + DATA.pre_token_total + ' pre-token records are set aside as wrapped, staked, bridged or versioned products. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
+        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols shown' }), el('b', { text: DATA.live_size + ' of ' + DATA.live_total + ' by market cap' }))
       )
     );
   }
@@ -217,7 +283,7 @@
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
       watch,
-      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
+      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' of ' + DATA.live_total + ' live-token protocols' })
     );
   }
 

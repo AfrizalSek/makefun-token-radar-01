@@ -195,6 +195,9 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  pre_token_total: number;
+  excluded_pre_token: number;
+  live_total: number;
   validation: Validation;
   rows: RadarRow[];
   live: LiveRow[];
@@ -422,6 +425,39 @@ function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
+/**
+ * The chain a farm step names. The snapshot's first chain, except a Bitlayer product, whose
+ * vaults run on Bitlayer itself: the official YBTC deposit guide (docs.bitlayer.org) takes
+ * YBTC.B or Bitlayer native BTC into a Bitlayer vault, and the snapshot lists the YBTC family
+ * under Bitcoin and Ethereum only, so the chain is named from the protocol's own docs.
+ */
+function farmChain(p: SnapshotProtocol): string {
+  if (p.name.toLowerCase().includes('bitlayer')) return 'Bitlayer';
+  return chainOf(p);
+}
+
+/** Approximate gas for one transaction on a chain, in dollars: Ethereum mainnet is dear, Bitcoin middling, the rest cheap. */
+function gasFor(chain: string): number {
+  if (chain === 'Ethereum') return 8;
+  if (chain === 'Bitcoin') return 3;
+  return 1;
+}
+
+/** The wallet a farm step tells the farmer to set up, in the chain's own terms. */
+function walletFor(chain: string): string {
+  if (chain === 'Bitcoin') return 'a fresh Bitcoin wallet';
+  if (chain === 'Solana') return 'a fresh Solana wallet';
+  if (chain === 'Sui') return 'a fresh Sui wallet';
+  return `a fresh wallet on ${chain}`;
+}
+
+/** Step 1: set up a wallet, in the chain's own terms; a watchlist protocol gets a dedicated wallet. */
+function setupText(p: SnapshotProtocol, chain: string, watchlist: boolean): string {
+  const wallet = walletFor(chain);
+  if (watchlist) return `Set up ${wallet} just for ${p.name} on ${chain} — the watchlist names this protocol — and keep its seed phrase offline.`;
+  return `Set up ${wallet} that holds only the funds you plan to farm on ${chain}, and keep its seed phrase offline.`;
+}
+
 /** How much capital one farm position needs, from the protocol's own TVL. */
 function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 5_000_000_000) return 250;
@@ -455,45 +491,104 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   if (c.includes('launchpad')) return `Commit $${capital} of USDC to the ${name} sale on ${chain} and hold the allocation.`;
   if (c.includes('payment')) return `Route $${capital} of payments through ${name} on ${chain} and keep the receipts.`;
   if (c.includes('gaming') || c.includes('social') || c.includes('ai') || c.includes('oracle')) return `Use $${capital} of the ${name} app on ${chain} each week and keep the activity on one wallet.`;
+  // BTC-anchored protocols (Anchor BTC, Decentralized BTC) take BTC, not USDC: USDC does not exist
+  // natively on Bitcoin. Vishwa bridges BTC to Sui (Fuzzland audit of the Vishwa light client);
+  // Bitlayer YBTC takes BTC or YBTC.B into a Bitlayer vault (docs.bitlayer.org); Chain Fusion's
+  // ckBTC is minted from native BTC (liquidium.fi docs); SUBFROST wraps BTC into frBTC on Bitcoin
+  // itself (docs.subfrost.io). The chain comes from farmChain, which names Bitlayer for Bitlayer.
+  if (c.includes('btc')) return `Deposit $${capital} of BTC into ${name} on ${chain} and keep the position open.`;
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
+/** Step 3: a second, different category action each week, distinct from the step-2 action. */
+function weeklyActionFor(p: SnapshotProtocol, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Borrow a small amount against the position once a week and repay it, so the wallet shows repeat activity.`;
+  if (c.includes('curator') || c.includes('allocator') || c.includes('indexes')) return `Read the vault's new allocation note once a week and note any change in strategy.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('liquidity') || c.includes('farm')) return `Swap a small amount through the pool once a week so the wallet shows repeat activity.`;
+  if (c.includes('bridge') || c.includes('cross chain')) return `Bridge a small amount back or to a second chain once a week through the same route.`;
+  if (c.includes('staking') || c.includes('restak')) return `Claim or compound the staking reward once a week and keep the receipt token.`;
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options') || c.includes('basis')) return `Close and reopen a small hedge once a week instead of leaving one trade untouched.`;
+  if (c.includes('prediction')) return `Settle one market position a week and place a fresh one on ${name}.`;
+  if (c.includes('stable')) return `Move a small amount in and out of the stable asset once a week through the same route.`;
+  if (c.includes('rwa')) return `Check the yield asset's new accrual once a week and record the balance.`;
+  if (c.includes('insurance')) return `Check the cover's terms once a week and note any change in the policy.`;
+  if (c.includes('launchpad')) return `Check the sale's next round once a week and note the allocation window.`;
+  if (c.includes('payment')) return `Route one small payment through ${name} on ${chain} once a week and keep the receipt.`;
+  if (/\b(gaming|social|ai|oracle)\b/.test(c)) return `Use the ${name} app once a week and keep the activity on the same wallet.`;
+  if (c.includes('btc')) return `Check the BTC peg and the protocol's backing once a week and record the rate.`;
+  return `Repeat the deposit action with a small amount once a week so the wallet shows repeat activity.`;
+}
+
+/** Step 4: the hold, with the reason varying by the protocol's age, category, chain and whether the watchlist names it. */
+function holdText(p: SnapshotProtocol, age: number | null, hold: number, watchlist: boolean, chain: string): string {
+  if (age !== null && age < 180) return `Hold the position for at least ${hold} days — young protocols often snapshot early on ${chain}, so a longer window counts.`;
+  if (watchlist) return `Hold the position for at least ${hold} days; the watchlist already tracks this protocol, so the hold is about qualifying.`;
+  if (age !== null && age >= 365) return `Hold the position for at least ${hold} days; a mature ${p.category ?? 'protocol'} protocol's snapshots reward a steady position.`;
+  return `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`;
+}
+
+/** Categories whose apps plausibly run a points, rewards or eligibility program. */
+const POINTS_CATEGORIES = ['dex', 'yield', 'lend', 'cdp', 'collateral', 'staking', 'restak', 'perpetual', 'derivative', 'options', 'basis', 'curator', 'allocator', 'indexes', 'prediction', 'farm', 'launchpad', 'governance'];
+
+/** Step 5: rewards, without assuming every protocol runs a points program. */
+function rewardsText(p: SnapshotProtocol, chain: string, watchlist: boolean): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('btc')) return `Before you withdraw, check the protocol's official docs for how wrapped BTC is redeemed on ${chain} and whether any rewards program applies.`;
+  if (POINTS_CATEGORIES.some((k) => c.includes(k))) {
+    if (watchlist) return `Before you withdraw, check the protocol's official app on ${chain} for any points, rewards or eligibility program — the watchlist already tracks this protocol — and follow only the link it publishes.`;
+    return `Before you withdraw, check the protocol's official app on ${chain} for any points, rewards or eligibility program and follow only the link it publishes.`;
+  }
+  return `Before you withdraw, check the protocol's official docs for any eligibility or rewards program; if it has none, record the position on ${chain} and move on.`;
+}
+
+/** Step 6: the farm log, with the note varying by the position's size, the protocol's age and the chain. */
+function logText(p: SnapshotProtocol, age: number | null, chain: string): string {
+  if (p.tvl_usd >= 1_000_000_000) return `Write the wallet, the dates and every transaction on ${chain} in a farm log; a large position is worth a full record before you unwind it.`;
+  if (age !== null && age < 180) return `Write the wallet, the dates and every transaction on ${chain} in a farm log and review it weekly while the protocol is young.`;
+  if (p.tvl_usd < 100_000_000) return `Write the wallet, the dates and every transaction on ${chain} in a farm log; small positions are easy to forget, so the log is the record.`;
+  return `Write the wallet, the dates and every transaction on ${chain} in a farm log so you can repeat the position or unwind it.`;
+}
+
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived
- * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * A protocol's farm plan: six steps, each an action with a cost and a time. Every step varies
+ * with the protocol's own record (category, chains, TVL, age, watchlist), so no two protocols
+ * share a plan unless their records agree on every input that shapes it.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
-  const chain = chainOf(p);
+export function farmSteps(p: SnapshotProtocol, age: number | null, watchlist: boolean): FarmStep[] {
+  const chain = farmChain(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
+  const gas = gasFor(chain);
   return [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      text: setupText(p, chain, watchlist),
+      cost: `about $${gas} of gas for the first transaction`,
       time: '5 minutes',
     },
     {
       text: actionFor(p, capital, chain),
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      cost: `$${capital} of capital and about $${gas} of gas`,
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
+      text: weeklyActionFor(p, chain),
+      cost: `about $${gas} of gas a week`,
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
+      text: holdText(p, age, hold, watchlist, chain),
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
+      text: rewardsText(p, chain, watchlist),
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
+      text: logText(p, age, chain),
       cost: 'nothing but the log',
       time: '5 minutes',
     },
@@ -548,7 +643,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       maturity_multiplier: s.v.maturityMult,
       age_days: s.v.age,
     },
-    farm_steps: farmSteps(s.p, s.v.age).map(stepText),
+    farm_steps: farmSteps(s.p, s.v.age, watchlist.has(s.p.slug)).map(stepText),
   }));
 }
 
@@ -601,6 +696,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const live = liveRows(snapshot);
   const comps = liveComps(snapshot);
   const early = board.filter((r) => !r.watchlist).length;
+  const preTokenTotal = snapshot.protocols.filter(isPreToken).length;
+  const excludedPreToken = preTokenTotal - board.length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -611,6 +708,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
+    pre_token_total: preTokenTotal,
+    excluded_pre_token: excludedPreToken,
+    live_total: comps.length,
     validation: validateModel(snapshot, model),
     rows: board.map((r) => radarRow(r, comps, model)),
     live,
